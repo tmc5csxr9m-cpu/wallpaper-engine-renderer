@@ -87,22 +87,21 @@ struct WebEngineServices {
 
     // Pull 128 audio-response samples (64 left + 64 right) suitable
     // for a single __weweb_pushAudio(...) call. The backend calls this
-    // every ~33 ms (30 Hz) when the host reports that the page has
-    // registered an audio listener. std::nullopt = no samples this
-    // tick; the backend will simply skip the JS push and try again
-    // next tick. Wallpaper Engine's web convention expects 0..1
-    // magnitudes per bin; the host is responsible for any FFT /
-    // downsample from its raw capture source.
+    // every ~33 ms (30 Hz) when project.json opts in through
+    // general.supportsaudioprocessing. std::nullopt = no samples this tick;
+    // the backend will simply skip the JS push and try again next tick.
+    // Wallpaper Engine's web convention expects 0..1 magnitudes per bin;
+    // the host is responsible for any FFT / downsample from its raw capture
+    // source.
     std::function<std::optional<std::array<float, 128>>(std::chrono::milliseconds /*period*/)>
         captureAudioSamples;
 };
 
 // Return a shared_ptr<WebEngineServices> populated with the host-portable
-// defaults: empty CEF resource / locale / cache paths (CEF will resolve
-// them from its own binary directory), audio muted, and a no-op audio
-    // capture that always returns std::nullopt. Hosts that need different
-    // behaviour should build their own services object and call
-    // CreateWebBackend(context, services); the default factory is what
+// defaults: resolved CEF resource / locale / cache paths, muted wallpaper
+// audio output, and system-output spectrum capture. Hosts that need different
+// behaviour should build their own services object and call
+// CreateWebBackend(context, services); the default factory is what
 // `CreateWebBackend(context)` falls back to when no services object is
 // provided.
 std::shared_ptr<WebEngineServices> CreateDefaultWebEngineServices();

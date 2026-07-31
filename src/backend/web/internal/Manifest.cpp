@@ -55,6 +55,11 @@ std::optional<WebManifestData> LoadWebManifest(const std::filesystem::path& work
     m.title      = j.value("title", std::string { "Wallpaper" });
 
     if (auto gen = j.find("general"); gen != j.end() && gen->is_object()) {
+        auto audio = gen->find("supportsaudioprocessing");
+        if (audio != gen->end() && audio->is_boolean()) {
+            m.supports_audio_processing = audio->get<bool>();
+        }
+
         auto props = gen->find("properties");
         if (props != gen->end() && props->is_object()) {
             // Verbatim dump — the page side preserves its own {type, value}

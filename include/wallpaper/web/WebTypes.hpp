@@ -79,10 +79,15 @@ using SoftwarePaintCallback =
 // `general.properties` object; consumers should not synthesise an empty
 // `{}` injection on their own (some wallpapers detect a no-op injection
 // and skip their property-driven setup).
+//
+// `supports_audio_processing` mirrors Wallpaper Engine's
+// `general.supportsaudioprocessing` opt-in. Only opted-in wallpapers receive
+// the 128-bin stereo spectrum through wallpaperRegisterAudioListener.
 struct WebManifestData {
-    std::string title;             // project.json:title (default "Wallpaper")
-    std::string entry_html;        // project.json:file  (default "index.html")
-    std::string user_props_json;   // raw JSON object (may be empty)
+    std::string title;           // project.json:title (default "Wallpaper")
+    std::string entry_html;      // project.json:file  (default "index.html")
+    std::string user_props_json; // raw JSON object (may be empty)
     bool        has_user_props { false };
+    bool        supports_audio_processing { false };
 };
 } // namespace wallpaper

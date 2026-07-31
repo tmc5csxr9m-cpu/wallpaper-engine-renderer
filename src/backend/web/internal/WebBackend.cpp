@@ -155,6 +155,9 @@ Result<void> WebBackend::load(const WallpaperSource& source) {
     m_forceSoftwareRestartRequested.store(false);
     m_softwareFallbackEnabled        = false;
     m_updatesWithoutAcceleratedFrame = 0;
+    m_audioSamples.reset();
+    m_nextAudioResponseAt  = {};
+    m_externalAudioSamples = false;
 
     m_workshopDir = WorkshopDirFromSourceUri(source.uri);
     auto manifest = web::LoadWebManifest(m_workshopDir);
@@ -373,6 +376,7 @@ Result<void> WebBackend::start() {
     m_paused                         = false;
     m_started                        = true;
     m_acceleratedPaintActive         = opts.prefer_accelerated_paint;
+    m_nextAudioResponseAt            = AudioResponseClock::now();
     return Result<void>::success();
 }
 
@@ -409,6 +413,7 @@ Result<void> WebBackend::stop() {
     m_reportedSoftwareFallbackUnsupported = false;
     m_reportedMissingAcceleratedFrames    = false;
     m_updatesWithoutAcceleratedFrame      = 0;
+    m_nextAudioResponseAt                 = {};
     return Result<void>::success();
 }
 
@@ -433,7 +438,8 @@ Result<void> WebBackend::setProperty(std::string_view name, PropertyValue value)
         }
     } else if (name == WE_SCENE_PROPERTY_AUDIO_SAMPLES) {
         if (const auto* object = std::get_if<PropertyObject>(&value); object && *object) {
-            m_audioSamples = std::static_pointer_cast<std::vector<float>>(*object);
+            m_audioSamples         = std::static_pointer_cast<std::vector<float>>(*object);
+            m_externalAudioSamples = true;
             if (m_browserHost && m_audioSamples && ! m_audioSamples->empty()) {
                 m_browserHost->PushAudioData(m_audioSamples->data(), m_audioSamples->size());
             }
@@ -548,6 +554,15 @@ Result<void> WebBackend::update() {
     }
     if (m_browserHost) {
         if (! m_paused) {
+            const auto now = AudioResponseClock::now();
+            if (m_started && m_manifest && m_manifest->supports_audio_processing &&
+                ! m_externalAudioSamples && now >= m_nextAudioResponseAt) {
+                m_nextAudioResponseAt = now + kAudioResponsePeriod;
+                auto samples          = m_services->captureAudioSamples(kAudioResponsePeriod);
+                if (samples.has_value()) {
+                    m_browserHost->PushAudioData(samples->data(), samples->size());
+                }
+            }
             m_browserHost->Invalidate();
             if (! m_softwareFallbackEnabled && ! m_sharedState->acceleratedFrameSeen.load() &&
                 ! m_reportedMissingAcceleratedFrames) {

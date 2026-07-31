@@ -14,7 +14,8 @@ if(BUILD_WEWEB)
         internal/WebBackend.cpp)
     target_link_libraries(${LIB_NAME} PUBLIC
         wpUtils
-        nlohmann_json::nlohmann_json)
+        nlohmann_json::nlohmann_json
+        PRIVATE wpAudio)
     target_include_directories(${LIB_NAME} PRIVATE
         ../..    # src/ — for runtime/, output/, common/, host/ includes
         ../../../include)  # project include/ — for wallpaper/ public headers

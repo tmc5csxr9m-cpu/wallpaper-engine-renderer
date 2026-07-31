@@ -4,9 +4,14 @@
 #include "wallpaper/web/WebEngineServices.hpp"
 
 #include "host/HostServices.hpp"
+#include "host/audio/SoundCapturer.hpp"
 
+#include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdlib>
 #include <limits.h>
+#include <memory>
 #include <unistd.h>
 #include <vector>
 
@@ -246,9 +251,37 @@ std::shared_ptr<WebEngineServices> CreateDefaultWebEngineServicesImpl(const Back
     services->extraCommandLineSwitches = []() {
         return extraSwitchesFromEnv();
     };
-    services->audioMuted             = []() { return true; };
-    services->captureAudioSamples    = [](std::chrono::milliseconds)
-        -> std::optional<std::array<float, 128>> { return std::nullopt; };
+    services->audioMuted = []() {
+        return true;
+    };
+
+    struct AudioCaptureState {
+        std::shared_ptr<audio::SoundCapturer> capturer = std::make_shared<audio::SoundCapturer>();
+        std::chrono::steady_clock::time_point retryAfter {};
+    };
+    auto audioCapture = std::make_shared<AudioCaptureState>();
+    services->captureAudioSamples =
+        [audioCapture](std::chrono::milliseconds) -> std::optional<std::array<float, 128>> {
+        const auto now = std::chrono::steady_clock::now();
+        if (! audioCapture->capturer->IsInited() && now < audioCapture->retryAfter) {
+            return std::nullopt;
+        }
+
+        std::vector<float> left;
+        std::vector<float> right;
+        std::vector<float> average;
+        audioCapture->capturer->GetSpectrum(64, &left, &right, &average);
+        if (! audioCapture->capturer->IsInited()) {
+            audioCapture->retryAfter = now + std::chrono::seconds(5);
+            return std::nullopt;
+        }
+        if (left.size() != 64 || right.size() != 64) return std::nullopt;
+
+        std::array<float, 128> samples {};
+        std::copy(left.begin(), left.end(), samples.begin());
+        std::copy(right.begin(), right.end(), samples.begin() + 64);
+        return samples;
+    };
     return services;
 }
 

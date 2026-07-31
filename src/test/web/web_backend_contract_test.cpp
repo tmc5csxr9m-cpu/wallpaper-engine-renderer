@@ -25,7 +25,10 @@ constexpr const char* kProjectJson = R"({
   "type": "web",
   "file": "index.html",
   "title": "Contract Test",
-  "general": { "properties": { "color": { "type": "combo", "value": "red" } } }
+  "general": {
+    "supportsaudioprocessing": true,
+    "properties": { "color": { "type": "combo", "value": "red" } }
+  }
 })";
 
 struct WorkshopFixture {
@@ -108,9 +111,16 @@ int main() {
     services->audioMuted = []() {
         return true;
     };
+    int audioCaptureCount = 0;
     services->captureAudioSamples =
-        [](std::chrono::milliseconds) -> std::optional<std::array<float, 128>> {
-        return std::nullopt;
+        [&audioCaptureCount](
+            std::chrono::milliseconds period) -> std::optional<std::array<float, 128>> {
+        requireAt(period == std::chrono::milliseconds(33), "audio capture period");
+        ++audioCaptureCount;
+        std::array<float, 128> samples {};
+        samples[0]  = 0.25f;
+        samples[64] = 0.75f;
+        return samples;
     };
 
     auto rawBackend =
@@ -180,7 +190,17 @@ int main() {
     // the user_props_json round-trips the {color: {type, value}} object.
     assert(mock->last_manifest.entry_html == "index.html");
     assert(mock->last_manifest.has_user_props);
+    assert(mock->last_manifest.supports_audio_processing);
     assert(mock->last_manifest.user_props_json.find("\"color\"") != std::string::npos);
+
+    // Audio-enabled manifests pull one 64-bin spectrum per channel on the
+    // backend's 30 Hz update cadence and forward it in left/right order.
+    assert(backend->update());
+    assert(audioCaptureCount == 1);
+    assert(mock->push_audio_count == 1);
+    assert(mock->last_audio.size() == 128);
+    assert(mock->last_audio[0] == 0.25f);
+    assert(mock->last_audio[64] == 0.75f);
 
     // OpenWallpaper was sized to the binding's RenderInitInfo.
     assert(mock->last_open_width == 640);
@@ -225,8 +245,10 @@ int main() {
     auto audio = std::make_shared<std::vector<float>>(std::initializer_list<float> { 0.1f, 0.2f });
     assert(backend->setProperty(wallpaper::WE_SCENE_PROPERTY_AUDIO_SAMPLES,
                                 std::static_pointer_cast<void>(audio)));
-    assert(mock->push_audio_count == 1);
+    assert(mock->push_audio_count == 2);
     assert(mock->last_audio == *audio);
+    assert(backend->update());
+    assert(audioCaptureCount == 1);
 
     auto unsupportedSpeed = backend->setProperty(wallpaper::WE_SCENE_PROPERTY_SPEED, 2.0f);
     assert(! unsupportedSpeed);

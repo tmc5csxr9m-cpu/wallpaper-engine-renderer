@@ -9,6 +9,7 @@
 #include "../../../include/wallpaper/web/WebEngineServices.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -54,7 +55,10 @@ public:
     void testSetBrowserHost(std::shared_ptr<WebBrowserHost> host);
 
 private:
+    using AudioResponseClock = std::chrono::steady_clock;
+
     static constexpr int kMissingAcceleratedFrameWarningUpdates = 60;
+    static constexpr std::chrono::milliseconds kAudioResponsePeriod { 33 };
 
     struct SharedState {
         std::atomic<BackendReadyState> readyState { BackendReadyState::Idle };
@@ -87,6 +91,8 @@ private:
     std::int32_t                        m_fps { 30 };
     bool                                m_muted { false };
     std::shared_ptr<std::vector<float>> m_audioSamples;
+    AudioResponseClock::time_point      m_nextAudioResponseAt {};
+    bool                                m_externalAudioSamples { false };
     bool                                m_paused { false };
     bool                                m_started { false };
     bool                                m_acceleratedPaintActive { false };
