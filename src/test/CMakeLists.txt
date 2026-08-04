@@ -590,6 +590,27 @@ target_compile_options(host-services-contract-test PRIVATE ${warn_opts})
 add_test(NAME host-services-contract-test COMMAND host-services-contract-test)
 
 add_executable(
+  sound-capturer-lifecycle-test
+  host/sound_capturer_lifecycle_test.cpp)
+
+target_link_libraries(sound-capturer-lifecycle-test PRIVATE wpAudio)
+target_include_directories(sound-capturer-lifecycle-test PRIVATE ..)
+target_compile_options(sound-capturer-lifecycle-test PRIVATE ${warn_opts} -UNDEBUG)
+
+add_test(NAME sound-capturer-lifecycle-test COMMAND sound-capturer-lifecycle-test)
+set_tests_properties(sound-capturer-lifecycle-test PROPERTIES TIMEOUT 5)
+
+add_executable(
+  sound-capture-device-selection-test
+  host/sound_capture_device_selection_test.cpp)
+
+target_link_libraries(sound-capture-device-selection-test PRIVATE wpAudio)
+target_include_directories(sound-capture-device-selection-test PRIVATE ..)
+target_compile_options(sound-capture-device-selection-test PRIVATE ${warn_opts} -UNDEBUG)
+
+add_test(NAME sound-capture-device-selection-test COMMAND sound-capture-device-selection-test)
+
+add_executable(
   sound-spectrum-dsp-test
   scene/sound_spectrum_dsp_test.cpp)
 

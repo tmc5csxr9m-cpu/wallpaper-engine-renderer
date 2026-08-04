@@ -1,4 +1,5 @@
 #include "SoundCapturer.hpp"
+#include "SoundCaptureDeviceSelection.hpp"
 #include "SoundSpectrumDsp.hpp"
 #include "miniaudio-wrapper.hpp"
 
@@ -6,11 +7,11 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
-#include <cctype>
 #include <mutex>
 #include <optional>
-#include <string_view>
+#include <string>
 
 namespace wallpaper::audio
 {
@@ -19,16 +20,22 @@ namespace
 constexpr ma_uint32 kSpectrumBandCount   = static_cast<ma_uint32>(dsp::kSpectrumBands);
 constexpr ma_uint32 kCaptureChannelCount = 2;
 constexpr ma_uint32 kCaptureSampleRate   = 48000;
+constexpr auto      kCaptureDeviceRefreshInterval = std::chrono::seconds(1);
 
-bool ContainsAsciiCaseInsensitive(std::string_view text, std::string_view pattern) {
-    return std::search(
-               text.begin(), text.end(), pattern.begin(), pattern.end(), [](char lhs, char rhs) {
-                   return std::tolower(static_cast<unsigned char>(lhs)) ==
-                          std::tolower(static_cast<unsigned char>(rhs));
-               }) != text.end();
+struct SelectedCaptureDevice {
+    ma_device_id id {};
+    std::string  key;
+    std::string  name;
+};
+
+std::string DeviceIdString(ma_backend backend, const ma_device_id& id) {
+    if (backend == ma_backend_pulseaudio) return id.pulse;
+    if (backend == ma_backend_alsa) return id.alsa;
+    return {};
 }
 
-std::optional<ma_device_id> FindMonitorCaptureDevice(ma_context& context) {
+std::optional<SelectedCaptureDevice> FindMonitorCaptureDevice(ma_context& context,
+                                                              bool        log_selection) {
     ma_device_info* playback_infos { nullptr };
     ma_uint32       playback_count { 0 };
     ma_device_info* capture_infos { nullptr };
@@ -40,14 +47,38 @@ std::optional<ma_device_id> FindMonitorCaptureDevice(ma_context& context) {
         return std::nullopt;
     }
 
-    for (ma_uint32 i = 0; i < capture_count; i++) {
-        const std::string_view name { capture_infos[i].name };
-        if (! ContainsAsciiCaseInsensitive(name, "monitor")) continue;
-        LOG_INFO("SoundCapturer: selected monitor source '%s'", capture_infos[i].name);
-        return capture_infos[i].id;
+    std::vector<AudioDeviceCandidate> playback_devices;
+    playback_devices.reserve(playback_count);
+    for (ma_uint32 index = 0; index < playback_count; ++index) {
+        auto id = DeviceIdString(context.backend, playback_infos[index].id);
+        playback_devices.push_back(
+            { std::move(id), playback_infos[index].name, playback_infos[index].isDefault != 0 });
     }
 
-    LOG_ERROR("SoundCapturer: no monitor capture device found");
+    std::vector<AudioDeviceCandidate> capture_devices;
+    capture_devices.reserve(capture_count);
+    for (ma_uint32 index = 0; index < capture_count; ++index) {
+        auto id = DeviceIdString(context.backend, capture_infos[index].id);
+        capture_devices.push_back(
+            { std::move(id), capture_infos[index].name, capture_infos[index].isDefault != 0 });
+    }
+
+    const auto selected_index = SelectMonitorCaptureDevice(playback_devices, capture_devices);
+    if (selected_index.has_value()) {
+        const auto index = static_cast<ma_uint32>(*selected_index);
+        SelectedCaptureDevice selected;
+        selected.id   = capture_infos[index].id;
+        selected.key  = capture_devices[index].id.empty() ? capture_devices[index].name
+                                                           : capture_devices[index].id;
+        selected.name = capture_devices[index].name;
+        if (log_selection) {
+            LOG_INFO("SoundCapturer: selected default-sink monitor source '%s'",
+                     selected.name.c_str());
+        }
+        return selected;
+    }
+
+    if (log_selection) LOG_ERROR("SoundCapturer: no monitor capture device found");
     return std::nullopt;
 }
 } // namespace
@@ -73,12 +104,14 @@ public:
         }
         m_context_inited = true;
 
-        const auto device_id = FindMonitorCaptureDevice(m_context);
-        if (! device_id.has_value()) {
+        const auto selected_device = FindMonitorCaptureDevice(m_context, true);
+        if (! selected_device.has_value()) {
             UnInit();
             return false;
         }
-        m_capture_device_id     = *device_id;
+        m_capture_device_id     = selected_device->id;
+        m_capture_device_key    = selected_device->key;
+        m_capture_device_name   = selected_device->name;
         m_has_capture_device_id = true;
 
         ma_device_config config  = ma_device_config_init(ma_device_type_capture);
@@ -103,6 +136,7 @@ public:
         }
 
         m_inited = true;
+        m_last_device_check = std::chrono::steady_clock::now();
         return true;
     }
 
@@ -111,7 +145,7 @@ public:
     bool IsInited() const { return m_inited; }
 
     void GetSpectrum(uint32_t resolution, std::vector<float>* left, std::vector<float>* right,
-                     std::vector<float>* average) const {
+                     std::vector<float>* average) {
         if (left == nullptr || right == nullptr || average == nullptr) return;
 
         const auto size = static_cast<size_t>(resolution);
@@ -119,6 +153,8 @@ public:
         right->assign(size, 0.0f);
         average->assign(size, 0.0f);
         if (size == 0) return;
+
+        if (! RefreshCaptureDeviceIfNeeded()) return;
 
         std::lock_guard<std::mutex> lock { m_spectrum_mutex };
         if (size >= m_spectrum_left.size()) {
@@ -149,6 +185,29 @@ public:
     }
 
 private:
+    bool RefreshCaptureDeviceIfNeeded() {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - m_last_device_check < kCaptureDeviceRefreshInterval) return true;
+        m_last_device_check = now;
+
+        const auto selected_device = FindMonitorCaptureDevice(m_context, false);
+        const bool capture_started = m_device_inited &&
+                                     ma_device_get_state(&m_device) == ma_device_state_started;
+        if (! selected_device.has_value()) return capture_started;
+        if (! CaptureRouteNeedsReconnect(
+                m_capture_device_key, capture_started, selected_device->key)) return true;
+
+        if (selected_device->key == m_capture_device_key) {
+            LOG_INFO("SoundCapturer: capture stream for '%s' stopped; reconnecting",
+                     selected_device->name.c_str());
+        } else {
+            LOG_INFO("SoundCapturer: default sink monitor changed from '%s' to '%s'; reconnecting",
+                     m_capture_device_name.c_str(), selected_device->name.c_str());
+        }
+        UnInit();
+        return Init();
+    }
+
     static void DataCallback(ma_device* device, void* output, const void* input, ma_uint32 frames) {
         (void)output;
         auto* self = static_cast<impl*>(device->pUserData);
@@ -212,6 +271,13 @@ private:
     void UnInit() {
         m_inited = false;
         if (m_device_inited) {
+            if (ma_device_get_state(&m_device) == ma_device_state_started) {
+                const ma_result stop_result = ma_device_stop(&m_device);
+                if (stop_result != MA_SUCCESS) {
+                    LOG_ERROR("SoundCapturer: failed to stop capture device before shutdown: %s",
+                              ma_result_description(stop_result));
+                }
+            }
             ma_device_uninit(&m_device);
             m_device_inited = false;
         }
@@ -220,11 +286,16 @@ private:
             m_context_inited = false;
         }
         m_has_capture_device_id = false;
+        m_capture_device_key.clear();
+        m_capture_device_name.clear();
     }
 
     ma_context                            m_context {};
     ma_device                             m_device {};
     ma_device_id                          m_capture_device_id {};
+    std::string                           m_capture_device_key;
+    std::string                           m_capture_device_name;
+    std::chrono::steady_clock::time_point m_last_device_check {};
     bool                                  m_has_capture_device_id { false };
     bool                                  m_context_inited { false };
     bool                                  m_device_inited { false };

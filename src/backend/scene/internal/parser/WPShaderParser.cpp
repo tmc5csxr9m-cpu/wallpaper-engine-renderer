@@ -20,6 +20,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <utility>
 
 static constexpr std::string_view SHADER_PLACEHOLD { "__SHADER_PLACEHOLD__" };
 
@@ -32,7 +33,7 @@ static constexpr std::string_view SHADER_PLACEHOLD { "__SHADER_PLACEHOLD__" };
 
 static constexpr int              kPreparedShaderSourceVersion { 5 };
 static constexpr std::string_view kPreparedShaderPipelineKey {
-    "prepared-shader-v20-directive-terminator-sanitize\n"
+    "prepared-shader-v21-legacy-audio-clamp-compat\n"
 };
 
 using namespace wallpaper;
@@ -718,6 +719,262 @@ inline std::string NormalizePackedAudioSpectrumAccessImpl(std::string_view sourc
     return output;
 }
 
+struct ShaderThreeArgumentCall {
+    size_t                                     close_pos { std::string_view::npos };
+    std::array<std::pair<size_t, size_t>, 3> arguments {};
+};
+
+inline std::optional<ShaderThreeArgumentCall>
+ParseShaderThreeArgumentCall(std::string_view source, size_t open_pos) {
+    if (open_pos >= source.size() || source[open_pos] != '(') return std::nullopt;
+
+    std::array<std::pair<size_t, size_t>, 3> arguments {};
+    size_t                                   argument_count { 0 };
+    size_t                                   argument_begin { open_pos + 1 };
+    int                                      paren_depth { 0 };
+    int                                      bracket_depth { 0 };
+    int                                      brace_depth { 0 };
+    bool                                     in_block_comment { false };
+    bool                                     in_string { false };
+    bool                                     escaped { false };
+    char                                     quote { '\0' };
+
+    for (size_t pos = open_pos + 1; pos < source.size(); ++pos) {
+        const char ch   = source[pos];
+        const char next = pos + 1 < source.size() ? source[pos + 1] : '\0';
+        if (in_block_comment) {
+            if (ch == '*' && next == '/') {
+                in_block_comment = false;
+                ++pos;
+            }
+            continue;
+        }
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == quote) {
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '/' && next == '/') {
+            const auto line_end = source.find('\n', pos + 2);
+            if (line_end == std::string_view::npos) return std::nullopt;
+            pos = line_end;
+            continue;
+        }
+        if (ch == '/' && next == '*') {
+            in_block_comment = true;
+            ++pos;
+            continue;
+        }
+        if (ch == '\'' || ch == '"') {
+            in_string = true;
+            quote     = ch;
+            continue;
+        }
+
+        if (ch == '(') {
+            ++paren_depth;
+        } else if (ch == ')') {
+            if (paren_depth > 0) {
+                --paren_depth;
+                continue;
+            }
+            if (bracket_depth != 0 || brace_depth != 0 || argument_count != 2)
+                return std::nullopt;
+            arguments[argument_count] = { argument_begin, pos };
+            return ShaderThreeArgumentCall { .close_pos = pos, .arguments = arguments };
+        } else if (ch == '[') {
+            ++bracket_depth;
+        } else if (ch == ']') {
+            --bracket_depth;
+        } else if (ch == '{') {
+            ++brace_depth;
+        } else if (ch == '}') {
+            --brace_depth;
+        } else if (ch == ',' && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0) {
+            if (argument_count >= 2) return std::nullopt;
+            arguments[argument_count++] = { argument_begin, pos };
+            argument_begin              = pos + 1;
+        }
+    }
+    return std::nullopt;
+}
+
+inline bool IsShaderUnitIntervalEndpoint(std::string_view expression, bool one) {
+    expression = TrimShaderExpression(expression);
+    if (! expression.empty() && (expression.back() == 'f' || expression.back() == 'F')) {
+        expression.remove_suffix(1);
+    }
+    if (one) {
+        return expression == "1" || expression == "1." || expression == "1.0";
+    }
+    return expression == "0" || expression == "0." || expression == ".0" ||
+           expression == "0.0";
+}
+
+inline bool ContainsAudioSpectrumIdentifier(std::string_view expression) {
+    size_t pos { 0 };
+    bool   in_block_comment { false };
+    bool   in_string { false };
+    bool   escaped { false };
+    char   quote { '\0' };
+    while (pos < expression.size()) {
+        const char ch   = expression[pos];
+        const char next = pos + 1 < expression.size() ? expression[pos + 1] : '\0';
+        if (in_block_comment) {
+            if (ch == '*' && next == '/') {
+                in_block_comment = false;
+                pos += 2;
+            } else {
+                ++pos;
+            }
+            continue;
+        }
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == quote) {
+                in_string = false;
+            }
+            ++pos;
+            continue;
+        }
+        if (ch == '/' && next == '/') {
+            const auto line_end = expression.find('\n', pos + 2);
+            pos = line_end == std::string_view::npos ? expression.size() : line_end + 1;
+            continue;
+        }
+        if (ch == '/' && next == '*') {
+            in_block_comment = true;
+            pos += 2;
+            continue;
+        }
+        if (ch == '\'' || ch == '"') {
+            in_string = true;
+            quote     = ch;
+            ++pos;
+            continue;
+        }
+        if (! IsIdentifierStart(ch)) {
+            ++pos;
+            continue;
+        }
+        const auto identifier_end = SkipIdentifier(expression, pos);
+        if (IsAudioSpectrumName(expression.substr(pos, identifier_end - pos))) return true;
+        pos = identifier_end;
+    }
+    return false;
+}
+
+inline std::string NormalizeLegacyAudioSpectrumClampImpl(std::string_view source) {
+    std::string output;
+    output.reserve(source.size());
+    size_t copied { 0 };
+    size_t pos { 0 };
+    bool   changed { false };
+    bool   in_block_comment { false };
+    bool   in_string { false };
+    bool   escaped { false };
+    char   quote { '\0' };
+
+    while (pos < source.size()) {
+        const char ch   = source[pos];
+        const char next = pos + 1 < source.size() ? source[pos + 1] : '\0';
+        if (in_block_comment) {
+            if (ch == '*' && next == '/') {
+                in_block_comment = false;
+                pos += 2;
+            } else {
+                ++pos;
+            }
+            continue;
+        }
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == quote) {
+                in_string = false;
+            }
+            ++pos;
+            continue;
+        }
+        if (ch == '/' && next == '/') {
+            const auto line_end = source.find('\n', pos + 2);
+            pos = line_end == std::string_view::npos ? source.size() : line_end + 1;
+            continue;
+        }
+        if (ch == '/' && next == '*') {
+            in_block_comment = true;
+            pos += 2;
+            continue;
+        }
+        if (ch == '\'' || ch == '"') {
+            in_string = true;
+            quote     = ch;
+            ++pos;
+            continue;
+        }
+        if (! IsIdentifierStart(ch)) {
+            ++pos;
+            continue;
+        }
+
+        const auto identifier_end = SkipIdentifier(source, pos);
+        if (source.substr(pos, identifier_end - pos) != "clamp") {
+            pos = identifier_end;
+            continue;
+        }
+        const auto open_pos = SkipShaderTrivia(source, identifier_end);
+        const auto call     = ParseShaderThreeArgumentCall(source, open_pos);
+        if (! call.has_value()) {
+            pos = identifier_end;
+            continue;
+        }
+        const auto argument = [&](size_t index) {
+            const auto [begin, end] = call->arguments[index];
+            return source.substr(begin, end - begin);
+        };
+        const auto first  = argument(0);
+        const auto second = argument(1);
+        const auto third  = argument(2);
+        if (! IsShaderUnitIntervalEndpoint(first, false) ||
+            ! IsShaderUnitIntervalEndpoint(second, true) ||
+            ! ContainsAudioSpectrumIdentifier(third)) {
+            pos = identifier_end;
+            continue;
+        }
+
+        // A handful of older Workshop effects wrote clamp(min, max, value). Legacy DirectX
+        // compilers happened to preserve the expected audio read even though the official shader
+        // contract is clamp(value, min, max). DXC is allowed to optimize the inverted bounds and
+        // folds the entire spectrum read to 1, leaving a permanently full visualizer. Restrict the
+        // repair to Wallpaper Engine's audio arrays so correctly-authored clamp calls are untouched.
+        output.append(source, copied, pos - copied);
+        output += "clamp(";
+        output.append(TrimShaderExpression(third));
+        output += ", ";
+        output.append(TrimShaderExpression(first));
+        output += ", ";
+        output.append(TrimShaderExpression(second));
+        output.push_back(')');
+        copied  = call->close_pos + 1;
+        pos     = copied;
+        changed = true;
+    }
+
+    if (! changed) return std::string(source);
+    output.append(source, copied, source.size() - copied);
+    return output;
+}
+
 struct IODecl {
     char        storage { 'v' };
     std::string type;
@@ -1361,6 +1618,7 @@ inline std::string PreprocessDxcWeSource(const std::string& src, ShaderType stag
     source             = CommentOutRequireDirectives(source);
     source             = UndefBeforeUserMacroDefines(source, "M_PI_2");
     source             = NormalizePackedAudioSpectrumAccessImpl(source);
+    source             = NormalizeLegacyAudioSpectrumClampImpl(source);
 
     std::string with_prologue;
     if (UserDefinesMod(source)) with_prologue += "#define WW_USER_MOD 1\n";
@@ -2559,6 +2817,10 @@ inline const char* DxcStageLogName(ShaderType stage) {
 
 std::string wallpaper::test::NormalizePackedAudioSpectrumAccess(std::string_view source) {
     return NormalizePackedAudioSpectrumAccessImpl(source);
+}
+
+std::string wallpaper::test::NormalizeLegacyAudioSpectrumClamp(std::string_view source) {
+    return NormalizeLegacyAudioSpectrumClampImpl(source);
 }
 
 std::string WPShaderParser::PreShaderSrc(fs::VFS& vfs, const std::string& src,

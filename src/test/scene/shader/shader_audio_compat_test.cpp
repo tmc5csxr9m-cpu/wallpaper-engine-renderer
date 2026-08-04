@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -80,6 +81,109 @@ void TestMalformedAccessStaysVisible() {
     Require(normalized == source,
             "malformed access should remain available for downstream diagnostics");
 }
+
+bool HasDynamicUniformArrayAccess(const wallpaper::ShaderCode& code) {
+    // SPIR-V starts with a five-word header. OpAccessChain and OpInBoundsAccessChain carry a base
+    // pointer plus at least two indices when a cbuffer member array is read dynamically.
+    constexpr uint16_t op_access_chain           = 65;
+    constexpr uint16_t op_in_bounds_access_chain = 66;
+    for (size_t offset = 5; offset < code.size();) {
+        const uint32_t instruction = code[offset];
+        const uint16_t word_count  = static_cast<uint16_t>(instruction >> 16);
+        const uint16_t opcode      = static_cast<uint16_t>(instruction & 0xffffu);
+        if (word_count == 0 || offset + word_count > code.size()) return false;
+        if ((opcode == op_access_chain || opcode == op_in_bounds_access_chain) &&
+            word_count >= 6) {
+            return true;
+        }
+        offset += word_count;
+    }
+    return false;
+}
+
+void TestLegacyAudioClampKeepsRuntimeSpectrumRead() {
+    const std::string source = R"(
+uniform float g_AudioSpectrum64Left[64];
+float volumNum(float barID) {
+    return clamp(0., 1., g_AudioSpectrum64Left[barID / 4][barID % 4]);
+}
+)";
+    const auto flattened = wallpaper::test::NormalizePackedAudioSpectrumAccess(source);
+    const auto normalized = wallpaper::test::NormalizeLegacyAudioSpectrumClamp(flattened);
+    Require(normalized.find(
+                "clamp(g_AudioSpectrum64Left[(int)(barID)], 0., 1.)") !=
+                std::string::npos,
+            "legacy min/max/audio clamp must put the live spectrum value first");
+
+    std::array<wallpaper::WPShaderUnit, 2> units {
+        wallpaper::WPShaderUnit {
+            .stage = wallpaper::ShaderType::VERTEX,
+            .src = R"(
+                attribute vec3 a_Position;
+                void main() { gl_Position = vec4(a_Position, 1.0); }
+            )",
+            .preprocess_info = {},
+        },
+        wallpaper::WPShaderUnit {
+            .stage = wallpaper::ShaderType::FRAGMENT,
+            .src = R"(
+                uniform float g_AudioSpectrum64Left[64];
+                uniform float u_soundStrength;
+                void main() {
+                    float barID = floor(gl_FragCoord.x) % 64.0;
+                    float value = clamp(
+                        0., 1., g_AudioSpectrum64Left[barID / 4][barID % 4]);
+                    float outputValue = value * u_soundStrength;
+                    gl_FragColor = vec4(outputValue, outputValue, outputValue, 1.0);
+                }
+            )",
+            .preprocess_info = {},
+        },
+    };
+    wallpaper::fs::VFS             vfs;
+    wallpaper::WPShaderInfo        shader_info;
+    std::vector<wallpaper::ShaderCode> codes;
+    const bool compiled = wallpaper::WPShaderParser::CompileToSpv(
+        "legacy-audio-clamp-test",
+        std::span<wallpaper::WPShaderUnit>(units.data(), units.size()),
+        codes,
+        vfs,
+        &shader_info,
+        std::span<const wallpaper::WPShaderTexInfo>());
+    Require(compiled, "legacy audio clamp shader should compile through DXC");
+    Require(codes.size() == units.size(), "legacy audio clamp shader stage count mismatch");
+    Require(HasDynamicUniformArrayAccess(codes[1]),
+            "DXC output must retain a dynamic runtime read from the audio spectrum array");
+}
+
+void TestLegacyAudioClampNormalizationStaysNarrow() {
+    const std::string source = R"shader(
+float correct = clamp(g_AudioSpectrum16Left[index], 0., 1.);
+float unrelated = clamp(0., 1., ordinaryValue);
+float nested = clamp(0.0f, 1.0f,
+                     lerp(g_AudioSpectrum32Right[index], fallback, weight));
+// clamp(0., 1., g_AudioSpectrum64Left[index])
+const char* diagnostic = "clamp(0., 1., g_AudioSpectrum64Right[index])";
+)shader";
+    const auto normalized = wallpaper::test::NormalizeLegacyAudioSpectrumClamp(source);
+    Require(normalized.find("clamp(g_AudioSpectrum16Left[index], 0., 1.)") !=
+                std::string::npos,
+            "correctly ordered audio clamp must stay unchanged");
+    Require(normalized.find("clamp(0., 1., ordinaryValue)") != std::string::npos,
+            "unrelated inverted clamp must stay unchanged");
+    Require(normalized.find(
+                "clamp(lerp(g_AudioSpectrum32Right[index], fallback, weight), 0.0f, 1.0f)") !=
+                std::string::npos,
+            "nested audio expression should be reordered without splitting inner commas");
+    Require(normalized.find("// clamp(0., 1., g_AudioSpectrum64Left[index])") !=
+                std::string::npos,
+            "audio clamp in a line comment must stay unchanged");
+    Require(normalized.find(
+                "\"clamp(0., 1., g_AudioSpectrum64Right[index])\"") !=
+                std::string::npos,
+            "audio clamp in a string literal must stay unchanged");
+}
+
 void TestPackedAudioShaderCompiles() {
     wallpaper::fs::VFS vfs;
     wallpaper::WPShaderInfo shaderInfo;
@@ -258,6 +362,8 @@ int main() {
     TestGenericPackedIndex();
     TestOnlyAudioArraysAreRewritten();
     TestMalformedAccessStaysVisible();
+    TestLegacyAudioClampKeepsRuntimeSpectrumRead();
+    TestLegacyAudioClampNormalizationStaysNarrow();
     TestPackedAudioShaderCompiles();
     TestCorruptPreparedShaderCacheRegenerates();
     TestTrailingSemicolonPreprocessorConditionCompiles();
