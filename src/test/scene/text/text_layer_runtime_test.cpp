@@ -1,13 +1,21 @@
 #include "backend/scene/internal/text/WPTextLayer.hpp"
+#include "backend/scene/internal/parser/WPSceneParser.hpp"
 
 #include "backend/scene/internal/scene/include/scene/Scene.h"
 #include "backend/scene/internal/scene/include/scene/SceneNode.h"
 #include "common/fs/include/fs/VFS.h"
 
 #include <cassert>
+#include <cmath>
 #include <memory>
 
 int main() {
+    const double acid_authoring_scale =
+        wallpaper::ResolveSceneTextAuthoringScale(8000, 3318);
+    const double acid_geometry_scale =
+        wallpaper::ResolveTextSceneGeometryScale(acid_authoring_scale);
+    assert(std::abs(acid_geometry_scale - (3318.0 / 768.0)) < 1.0e-9);
+
     wallpaper::TextLayerRuntimeState state;
     state.object.id = 12;
     state.object.name = "Label";

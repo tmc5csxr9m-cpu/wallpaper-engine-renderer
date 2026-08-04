@@ -2521,6 +2521,10 @@ void SyncTextLayerEffectTransform(Scene& scene, int32_t layer_id, SceneNode* nod
 
 } // namespace
 
+double wallpaper::ResolveTextSceneGeometryScale(double authoring_scale) {
+    return ResolveBaseTextGeometryScale(authoring_scale);
+}
+
 void wallpaper::RebuildTextPrimitiveVisibleMesh(SceneMesh* mesh,
                                                 const SceneTextPrimitive& primitive) {
     if (mesh == nullptr) return;

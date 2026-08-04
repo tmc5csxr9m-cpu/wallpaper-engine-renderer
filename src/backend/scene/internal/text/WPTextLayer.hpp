@@ -113,6 +113,7 @@ bool BuildSceneTextPrimitive(fs::VFS&                         vfs,
                              double                           authoring_scale,
                              std::shared_ptr<SceneTextPrimitive>* out_primitive,
                              std::string*                     out_error = nullptr);
+double ResolveTextSceneGeometryScale(double authoring_scale);
 void RebuildTextPrimitiveVisibleMesh(SceneMesh* mesh, const SceneTextPrimitive& primitive);
 bool UpdateTextLayerSceneTransform(Scene& scene, int32_t layer_id);
 bool UpdateTextLayerSceneBridgeResources(Scene& scene, int32_t layer_id);

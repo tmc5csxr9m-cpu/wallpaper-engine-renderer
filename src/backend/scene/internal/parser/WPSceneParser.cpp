@@ -68,21 +68,22 @@ using namespace Eigen;
 
 std::string getAddr(void* p) { return std::to_string(reinterpret_cast<intptr_t>(p)); }
 
+namespace wallpaper
+{
+
 double ResolveSceneTextAuthoringScale(i32 ortho_w, i32 ortho_h) {
-    const wpscene::WPSceneGeneral default_general;
-    const double default_width =
-        static_cast<double>(std::max(1, default_general.orthogonalprojection.width));
-    const double default_height =
-        static_cast<double>(std::max(1, default_general.orthogonalprojection.height));
-    const double scene_width  = static_cast<double>(std::max(1, ortho_w));
+    (void)ortho_w;
+    constexpr double kWallpaperEngineTextSceneHeightBaseline = 768.0;
     const double scene_height = static_cast<double>(std::max(1, ortho_h));
 
-    // Wallpaper Engine text point sizes are authored in the editor's logical text-pixel contract,
-    // while scene coordinates can be larger than the editor's default canvas. Keep this conversion
-    // in the parser, next to the scene projection data, so WPTextLayer only consumes a semantic
-    // authoring scale and never has to know about scene.json projection defaults or desktop scale.
-    return std::max(1.0, std::min(scene_width / default_width, scene_height / default_height));
+    // Wallpaper Engine text point sizes use a 768-pixel-high authoring canvas. WPTextLayer squares
+    // this semantic authoring scale when it converts glyph geometry into scene units, so keep the
+    // square root here. This restores the original scene-height contract without coupling glyph
+    // size to the desktop output scale or to wide-scene aspect ratios.
+    return std::sqrt(scene_height / kWallpaperEngineTextSceneHeightBaseline);
 }
+
+} // namespace wallpaper
 
 
 std::string DescribeIndexVec(const std::vector<usize>& values) {

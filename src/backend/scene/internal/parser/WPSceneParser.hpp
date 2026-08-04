@@ -10,6 +10,8 @@ namespace wallpaper
 
 class Scene;
 
+double ResolveSceneTextAuthoringScale(i32 ortho_w, i32 ortho_h);
+
 class WPSceneParser : public ISceneParser {
 public:
     WPSceneParser()  = default;

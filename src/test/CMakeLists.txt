@@ -1048,6 +1048,7 @@ target_link_libraries(text-layer-runtime-test PRIVATE ${PROJECT_NAME} wpSceneBac
 target_include_directories(
   text-layer-runtime-test PRIVATE
   ..
+  ../backend/scene/internal/animation
   ../backend/scene/internal
   ../backend/scene/internal/scene/include
   ../backend/scene/internal/scenescript
@@ -1056,7 +1057,7 @@ target_include_directories(
   ../common
   ../common/scene
   ../../third_party/nlohmann/include)
-target_compile_options(text-layer-runtime-test PRIVATE ${warn_opts})
+target_compile_options(text-layer-runtime-test PRIVATE ${warn_opts} -UNDEBUG)
 
 add_test(NAME text-layer-runtime-test COMMAND text-layer-runtime-test)
 
