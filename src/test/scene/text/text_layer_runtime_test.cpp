@@ -10,6 +10,13 @@
 #include <memory>
 
 int main() {
+    assert(wallpaper::ResolveTextFontFamilyAlias("systemfont_comicsans") == "Comic Sans MS");
+    assert(wallpaper::ResolveTextFontFamilyAlias("systemfont_default") == "Sans");
+    assert(wallpaper::ResolveTextFontFamilyAlias("systemfont_") == "Sans");
+    assert(wallpaper::ResolveTextFontFamilyAlias("systemfont_example_family") ==
+           "example family");
+    assert(wallpaper::ResolveTextFontFamilyAlias("Imported Font") == "Imported Font");
+
     const double acid_authoring_scale =
         wallpaper::ResolveSceneTextAuthoringScale(8000, 3318);
     const double acid_geometry_scale =

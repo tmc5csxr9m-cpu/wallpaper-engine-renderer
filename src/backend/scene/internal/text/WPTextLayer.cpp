@@ -265,15 +265,6 @@ std::string NormalizeAssetPath(fs::VFS& vfs, std::string_view path) {
     return asset_path;
 }
 
-std::string NormalizeSystemFontAlias(std::string font) {
-    if (! font.starts_with("systemfont_")) return font;
-
-    font.erase(0, std::string("systemfont_").size());
-    std::replace(font.begin(), font.end(), '_', ' ');
-    if (font == "default") return "Sans";
-    return font.empty() ? std::string("Sans") : font;
-}
-
 std::string LowercaseAscii(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
         return static_cast<char>(std::tolower(character));
@@ -872,7 +863,7 @@ std::optional<std::string> ResolveFontFamily(fs::VFS& vfs, const std::string& fo
         return std::string("Sans");
     }
     if (! IsSupportedFontAssetPath(font)) {
-        return NormalizeSystemFontAlias(font);
+        return wallpaper::ResolveTextFontFamilyAlias(font);
     }
 
     const auto asset_path      = NormalizeAssetPath(vfs, font);
@@ -2520,6 +2511,22 @@ void SyncTextLayerEffectTransform(Scene& scene, int32_t layer_id, SceneNode* nod
 }
 
 } // namespace
+
+std::string wallpaper::ResolveTextFontFamilyAlias(std::string_view font) {
+    constexpr std::string_view system_font_prefix { "systemfont_" };
+    if (! font.starts_with(system_font_prefix)) return std::string(font);
+
+    std::string alias(font.substr(system_font_prefix.size()));
+    if (alias.empty() || alias == "default") return "Sans";
+
+    // Wallpaper Engine stores this Windows family as a compact editor identifier rather than the
+    // name exposed by the font itself. Passing the identifier through unchanged makes Fontconfig
+    // miss Comic Sans MS and silently substitute the desktop's default sans-serif family.
+    if (alias == "comicsans") return "Comic Sans MS";
+
+    std::replace(alias.begin(), alias.end(), '_', ' ');
+    return alias;
+}
 
 double wallpaper::ResolveTextSceneGeometryScale(double authoring_scale) {
     return ResolveBaseTextGeometryScale(authoring_scale);
