@@ -405,7 +405,8 @@ bool ApplyPropertyAnimationInstance(WPSceneScriptHost::Opaque* opaque,
 bool ApplyRegistrationValue(WPSceneScriptHost::Opaque*       opaque,
                             const WPSceneScriptRegistration& registration,
                             const WPDynamicValue&            value);
-void RebindLayerRegistrations(WPSceneScriptHost::Opaque* opaque, int32_t layer_id, SceneNode* node);
+void RebindLayerRegistrations(WPSceneScriptHost::Opaque* opaque, int32_t layer_id,
+                              SceneNode* node, SceneNode* previous_node);
 void RegisterSceneRegistrationRange(WPSceneScriptHost::Opaque* opaque,
                                     const SceneRegistrationRange& range);
 bool MaterializeDeferredImageLayerIfNeeded(WPSceneScriptHost::Opaque* opaque, int32_t layer_id,
@@ -2752,16 +2753,27 @@ SceneNode* FindNodeById(WPSceneScriptHost::Opaque* opaque, int32_t node_id) {
 }
 
 void RebindLayerRegistrations(WPSceneScriptHost::Opaque* opaque, int32_t layer_id,
-                              SceneNode* node) {
+                              SceneNode* node, SceneNode* previous_node) {
     if (opaque == nullptr || opaque->scene == nullptr) return;
 
-    auto rebind_registration = [layer_id, node](WPSceneScriptRegistration& registration) {
-        if (registration.object_id == layer_id &&
-            (registration.target_kind == WPSceneScriptTargetKind::Layer ||
-             registration.target_kind == WPSceneScriptTargetKind::Effect)) {
+    auto rebind_registration = [layer_id, node, previous_node](
+                                   WPSceneScriptRegistration& registration) {
+        if (registration.object_id != layer_id) return;
+
+        const bool owner_target = registration.target_kind == WPSceneScriptTargetKind::Layer ||
+                                  registration.target_kind == WPSceneScriptTargetKind::Effect;
+        const bool stale_placeholder_target =
+            previous_node != nullptr && registration.node == previous_node &&
+            (registration.target_kind == WPSceneScriptTargetKind::AnimationLayer ||
+             registration.target_kind == WPSceneScriptTargetKind::MaterialUniform);
+        if (owner_target || stale_placeholder_target) {
             // Deferred text/particle materialization replaces the lightweight logical node with
             // the real runtime node. Effect registrations still target the effect by id/index, but
             // their script environment also needs the owner layer node id for thisObject helpers.
+            // Resolvable material-uniform registrations are promoted to concrete effect nodes while
+            // parsing the replacement. Only registrations still pointing at the old placeholder
+            // belong here; rebinding them prevents a dangling pointer without overwriting a
+            // successful promotion.
             registration.node = node;
         }
     };
@@ -2874,6 +2886,7 @@ bool MaterializeDeferredParticleLayerIfNeeded(WPSceneScriptHost::Opaque* opaque,
     if (opaque->scene->deferredRuntimeParticleLayerIds.count(layer_id) == 0) return true;
 
     const auto registration_range = CaptureSceneRegistrationRange(opaque);
+    auto*      previous_node      = FindNodeById(opaque, layer_id);
 
     if (! wallpaper::MaterializeDeferredParticleLayer(
             *opaque->scene, layer_id, &opaque->user_properties)) {
@@ -2887,7 +2900,7 @@ bool MaterializeDeferredParticleLayerIfNeeded(WPSceneScriptHost::Opaque* opaque,
         return false;
     }
 
-    RebindLayerRegistrations(opaque, layer_id, node);
+    RebindLayerRegistrations(opaque, layer_id, node, previous_node);
     RegisterSceneRegistrationRange(opaque, registration_range);
     EnsureTextureAnimationStatesForNode(opaque, node);
     // Realizing a deferred particle layer inserts the actual runtime scene node and the particle
@@ -2907,6 +2920,7 @@ bool MaterializeDeferredImageLayerIfNeeded(WPSceneScriptHost::Opaque* opaque, in
     if (opaque->scene->deferredRuntimeImageLayerIds.count(layer_id) == 0) return true;
 
     const auto registration_range = CaptureSceneRegistrationRange(opaque);
+    auto*      previous_node      = FindNodeById(opaque, layer_id);
 
     if (! wallpaper::MaterializeDeferredImageLayer(
             *opaque->scene, layer_id, &opaque->user_properties)) {
@@ -2920,7 +2934,7 @@ bool MaterializeDeferredImageLayerIfNeeded(WPSceneScriptHost::Opaque* opaque, in
         return false;
     }
 
-    RebindLayerRegistrations(opaque, layer_id, node);
+    RebindLayerRegistrations(opaque, layer_id, node, previous_node);
     RegisterSceneRegistrationRange(opaque, registration_range);
     EnsureTextureAnimationStatesForNode(opaque, node);
     // Deferred image layers are the expensive case for multilingual scenes: the hidden placeholder
@@ -2939,6 +2953,7 @@ bool MaterializeDeferredTextLayerIfNeeded(WPSceneScriptHost::Opaque* opaque, int
     if (opaque->scene->deferredRuntimeTextLayerIds.count(layer_id) == 0) return true;
 
     const auto registration_range = CaptureSceneRegistrationRange(opaque);
+    auto*      previous_node      = FindNodeById(opaque, layer_id);
 
     if (! wallpaper::MaterializeDeferredTextLayer(
             *opaque->scene, layer_id, &opaque->user_properties)) {
@@ -2952,7 +2967,7 @@ bool MaterializeDeferredTextLayerIfNeeded(WPSceneScriptHost::Opaque* opaque, int
         return false;
     }
 
-    RebindLayerRegistrations(opaque, layer_id, node);
+    RebindLayerRegistrations(opaque, layer_id, node, previous_node);
     RegisterSceneRegistrationRange(opaque, registration_range);
     EnsureTextureAnimationStatesForNode(opaque, node);
     // Deferred text materialization follows the same contract as particles: the render graph built

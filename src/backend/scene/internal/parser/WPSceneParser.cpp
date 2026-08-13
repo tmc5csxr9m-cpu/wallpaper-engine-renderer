@@ -885,13 +885,46 @@ bool IsCameraLayerRuntimeProperty(std::string_view property_name) {
            property_name == "zoom" || property_name == "fov";
 }
 
+struct ImageLayerCompositeTarget {
+    int32_t layer_id { 0 };
+    char    local_ping_pong { '\0' };
+};
+
+std::optional<ImageLayerCompositeTarget> ParseImageLayerCompositeTarget(std::string_view value) {
+    if (! sstart_with(value, WE_IMAGE_LAYER_COMPOSITE_PREFIX)) return std::nullopt;
+
+    auto remainder = value.substr(static_cast<size_t>(WE_IMAGE_LAYER_COMPOSITE_PREFIX.size()));
+    const auto digit_count = static_cast<size_t>(std::distance(
+        remainder.begin(),
+        std::find_if(remainder.begin(), remainder.end(), [](unsigned char ch) {
+            return std::isdigit(ch) == 0;
+        })));
+    if (digit_count == 0) return std::nullopt;
+
+    const auto suffix = remainder.substr(digit_count);
+    if (! suffix.empty() && suffix != "_a" && suffix != "_b") return std::nullopt;
+
+    int32_t layer_id { 0 };
+    STRTONUM(std::string(remainder.substr(0, digit_count)), layer_id);
+    if (layer_id <= 0) return std::nullopt;
+
+    return ImageLayerCompositeTarget {
+        .layer_id        = layer_id,
+        .local_ping_pong = suffix.empty() ? '\0' : suffix.back(),
+    };
+}
+
 std::optional<int32_t> ParseLinkedLayerId(std::string_view value) {
     if (sstart_with(value, WE_IMAGE_LAYER_COMPOSITE_PREFIX)) {
-        std::string id_text(
-            value.substr(static_cast<size_t>(WE_IMAGE_LAYER_COMPOSITE_PREFIX.size())));
-        int32_t id { 0 };
-        STRTONUM(id_text, id);
-        return id > 0 ? std::optional<int32_t>(id) : std::nullopt;
+        const auto target = ParseImageLayerCompositeTarget(value);
+        // Only the exact `_rt_imageLayerComposite_<id>` spelling denotes a linked layer.
+        // Wallpaper Engine also emits layer-local ping-pong targets such as
+        // `_rt_imageLayerComposite_258_a` and `_rt_imageLayerComposite_258_b`. Treating those
+        // internal targets as links makes the owner layer depend on itself, which in turn keeps
+        // source-less generators (notably audio bars) private instead of compositing them into
+        // their parent.
+        if (! target.has_value() || target->local_ping_pong != '\0') return std::nullopt;
+        return target->layer_id;
     }
     if (IsSpecLinkTex(value)) return static_cast<int32_t>(ParseLinkTex(value));
     return std::nullopt;
@@ -1489,14 +1522,18 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat, const
             }
             */
         } else if (sstart_with(name, WE_IMAGE_LAYER_COMPOSITE_PREFIX)) {
-            LOG_VERBOSE("link tex \"%s\"", name.c_str());
-            int         wpid { -1 };
-            std::regex  reImgId { R"(_rt_imageLayerComposite_([0-9]+))" };
-            std::smatch match;
-            if (std::regex_search(name, match, reImgId)) {
-                STRTONUM(std::string(match[1]), wpid);
+            const auto target = ParseImageLayerCompositeTarget(name);
+            if (! target.has_value()) {
+                LOG_ERROR("invalid image layer composite tex \"%s\"", name.c_str());
+            } else {
+                // Layer-local `_a`/`_b` names only have meaning while the owning image effect is
+                // being assembled, where ParseImageObj resolves them to that effect's concrete
+                // ping-pong targets. A generic material has no such owner context, so retain the
+                // historical published-layer fallback here instead of binding a process-global
+                // generic ping-pong alias that may belong to another layer.
+                LOG_VERBOSE("link tex \"%s\"", name.c_str());
+                name = GenLinkTex(static_cast<u32>(target->layer_id));
             }
-            name = GenLinkTex((u32)wpid);
         } else if (sstart_with(name, WE_MIP_MAPPED_FRAME_BUFFER)) {
         } else if (sstart_with(name, WE_EFFECT_PPONG_PREFIX)) {
         } else if (sstart_with(name, WE_HALF_COMPO_BUFFER_PREFIX)) {
@@ -5162,6 +5199,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj,
             for (usize i_mat = 0; i_mat < wpeffobj.materials.size(); i_mat++) {
                 wpscene::WPMaterial wpmat = wpeffobj.materials.at(i_mat);
                 std::string         matOutRT { WE_EFFECT_PPONG_PREFIX_B };
+                std::vector<bool>   fixed_ping_pong_texture_slots;
                 if (wpeffobj.passes.size() > i_mat) {
                     const auto& wppass = wpeffobj.passes.at(i_mat);
                     wpmat.MergePass(wppass);
@@ -5181,6 +5219,26 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj,
                         } else {
                             matOutRT = fboMap.at(wppass.target);
                         }
+                    }
+                    fixed_ping_pong_texture_slots.resize(wpmat.textures.size(), false);
+                    for (usize texture_index = 0; texture_index < wpmat.textures.size();
+                         texture_index++) {
+                        auto&      texture = wpmat.textures[texture_index];
+                        const auto target  = ParseImageLayerCompositeTarget(texture);
+                        if (! target.has_value() || target->layer_id != wpimgobj.id ||
+                            target->local_ping_pong == '\0') {
+                            continue;
+                        }
+
+                        // Wallpaper Engine serializes an effect's layer-local ping-pong inputs as
+                        // `_rt_imageLayerComposite_<owner>_a/_b`. Resolve those names while the
+                        // owning effect targets are in scope; treating them as a published layer
+                        // link either creates a self-dependency or samples an unwritten `_rt_link`.
+                        // Mark the slot as fixed as well: the chain resolver otherwise mistakes the
+                        // concrete `_rt_effect_pingpong_*_<owner>` name for its symbolic current-input
+                        // prefix and swaps it a second time after the preceding effect.
+                        texture = target->local_ping_pong == 'a' ? effect_ppong_a : effect_ppong_b;
+                        fixed_ping_pong_texture_slots[texture_index] = true;
                     }
                 }
                 // Layer-level copybackground is a shader combo contract for every authored effect
@@ -5268,6 +5326,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj,
                     .authored_output = matOutRT,
                     .output = matOutRT,
                     .authored_textures = authored_textures,
+                    .fixed_ping_pong_texture_slots = fixed_ping_pong_texture_slots,
                     .sceneNode = spEffNode,
                     .camera_override = {},
                     .use_active_camera_for_parallax = false,

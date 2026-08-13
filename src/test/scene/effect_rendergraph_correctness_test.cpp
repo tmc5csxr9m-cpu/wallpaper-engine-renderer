@@ -323,6 +323,20 @@ int main() {
     }
 
     {
+        // An explicitly authored `_rt_imageLayerComposite_<owner>_b` input resolves to the
+        // physical B target. After effect A the symbolic B alias points at physical A, so this
+        // fixture catches an accidental second swap in ResolveEffect().
+        auto fixture = makeFixture(false);
+        auto& fixed_input = fixture->effectB->nodes.front();
+        fixed_input.authored_textures = { fixture->pingB };
+        fixed_input.fixed_ping_pong_texture_slots = { true };
+        auto graph = wallpaper::BuildWESceneRenderPlan(fixture->scene);
+        auto* effect_b = findShaderByMaterial(*graph, "effect-b");
+        assert(effect_b != nullptr);
+        assert(effect_b->textures.front() == fixture->pingB);
+    }
+
+    {
         auto fixture = makeFixture(false);
         auto check = [&](bool visible) {
             fixture->effectA->SetLocalVisible(visible);

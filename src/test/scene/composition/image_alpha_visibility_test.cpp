@@ -236,6 +236,10 @@ Fixture ParseScene(const wallpaper::UserPropertyMap& properties) {
                                                               "speed": {
                                                                   "value": 0.5,
                                                                   "script": "'use strict';\nlet speed = 0.5;\nshared.effectModuleInitCount = (shared.effectModuleInitCount ?? 0) + 1;\nshared.mCheckRotation = (event) => { shared.lastEffectInitCount = shared.effectModuleInitCount; speed = 0.75; };\nexport function update(value) { return speed; }"
+                                                              },
+                                                              "unresolved": {
+                                                                  "value": 0.25,
+                                                                  "script": "'use strict';\nexport function update(value) { return value; }"
                                                               }
                                                           }
                                                       }
@@ -402,6 +406,21 @@ int main() {
     Require(scene->GetLayerLocalVisibility(10), "image did not become visible again");
     Require(NearlyEqual(ReadAlpha(*direct_material), 0.2f),
             "visibility restore reset the authored alpha");
+
+    // Residency warm-up replaces the same logical placeholder while the layer is hidden. An
+    // authored constant that cannot be resolved by the concrete shader must stop referring to the
+    // destroyed placeholder; the following frame used to dereference that stale node.
+    auto warmup_fixture = ParseScene(initial);
+    auto warmup_scene   = warmup_fixture.scene;
+    Require(warmup_scene != nullptr, "warm-up scene failed to parse");
+    RegisterRuntime(*warmup_scene);
+    Require(warmup_scene->scriptHost->MaterializeNextDeferredRuntimeLayerForResidency(),
+            "deferred residency warm-up did not materialize a layer");
+    Require(!warmup_scene->deferredRuntimeImageLayerIds.contains(10),
+            "warm-up image remained deferred");
+    Require(!warmup_scene->GetLayerLocalVisibility(10),
+            "warm-up changed the hidden layer visibility");
+    warmup_scene->scriptHost->FrameBegin(0.1);
 
     return 0;
 }

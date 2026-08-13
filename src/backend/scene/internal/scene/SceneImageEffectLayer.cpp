@@ -341,8 +341,13 @@ SceneImageEffectNode* SceneImageEffectLayer::ResolveEffectPingPongChain(
             if (!it->authored_textures.empty()) {
                 texs = it->authored_textures;
             }
-            for (auto& texture : texs) {
-                texture = ResolvePingPongInputAlias(texture, ppong_a, ppong_b);
+            for (size_t texture_index = 0; texture_index < texs.size(); texture_index++) {
+                if (texture_index < it->fixed_ping_pong_texture_slots.size() &&
+                    it->fixed_ping_pong_texture_slots[texture_index]) {
+                    continue;
+                }
+                texs[texture_index] =
+                    ResolvePingPongInputAlias(texs[texture_index], ppong_a, ppong_b);
             }
         }
 

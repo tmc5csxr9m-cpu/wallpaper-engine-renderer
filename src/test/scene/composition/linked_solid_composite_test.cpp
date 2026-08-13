@@ -193,6 +193,57 @@ std::shared_ptr<wallpaper::Scene> ParseScene(bool source_visible, bool color_ble
     return parser.Parse("linked-solid", scene_json, vfs, sound_manager);
 }
 
+std::shared_ptr<wallpaper::Scene> ParseLayerLocalCompositeTargetScene() {
+    wallpaper::WPSceneParser parser;
+    wallpaper::fs::VFS vfs;
+    wallpaper::audio::SoundManager sound_manager;
+    MountAssets(vfs);
+
+    const std::string scene_json = R"({
+        "camera": {
+            "center": [0, 0, 0],
+            "eye": [0, 0, 1],
+            "up": [0, 1, 0]
+        },
+        "general": {
+            "clearcolor": [0, 0, 0],
+            "orthogonalprojection": {
+                "width": 64,
+                "height": 64
+            },
+            "zoom": 1
+        },
+        "objects": [
+            {
+                "id": 30,
+                "name": "LocalCompositeTarget",
+                "image": "consumer.json",
+                "origin": [0, 0, 0],
+                "angles": [0, 0, 0],
+                "scale": [1, 1, 1],
+                "instance": {
+                    "textures": ["_rt_imageLayerComposite_30_a"]
+                },
+                "visible": true
+            },
+            {
+                "id": 31,
+                "name": "SecondLocalCompositeTarget",
+                "image": "consumer.json",
+                "origin": [0, 0, 0],
+                "angles": [0, 0, 0],
+                "scale": [1, 1, 1],
+                "instance": {
+                    "textures": ["_rt_imageLayerComposite_31_b"]
+                },
+                "visible": true
+            }
+        ]
+    })";
+
+    return parser.Parse("layer-local-composite-target", scene_json, vfs, sound_manager);
+}
+
 wallpaper::SceneImageEffectLayer* FindSourceEffectLayer(wallpaper::Scene& scene) {
     const auto runtime_it = scene.objectRuntimeNodes.find(10);
     if (runtime_it == scene.objectRuntimeNodes.end()) return nullptr;
@@ -299,11 +350,40 @@ void Verify(bool source_visible, bool color_blend = false) {
     Require(publisher->should_execute() == source_visible,
             "linked solid visible publisher gate does not follow layer visibility");
 }
+
+void VerifyLayerLocalCompositeTargetsAreNotDependencies() {
+    auto scene = ParseLayerLocalCompositeTargetScene();
+    Require(scene != nullptr, "layer-local composite target scene failed to parse");
+    Require(scene->offscreenDependencyLayerIds.count(30) == 0,
+            "_a layer-local composite target was misclassified as a self dependency");
+    Require(scene->offscreenDependencyLayerIds.count(31) == 0,
+            "_b layer-local composite target was misclassified as a self dependency");
+
+    const auto first_texture = [&scene](int32_t layer_id) -> const std::string* {
+        const auto nodes_it = scene->objectRuntimeNodes.find(layer_id);
+        if (nodes_it == scene->objectRuntimeNodes.end()) return nullptr;
+        for (auto* node : nodes_it->second) {
+            if (node == nullptr || node->Mesh() == nullptr ||
+                node->Mesh()->Material() == nullptr || node->Mesh()->Material()->textures.empty()) {
+                continue;
+            }
+            return &node->Mesh()->Material()->textures.front();
+        }
+        return nullptr;
+    };
+    const auto* target_a = first_texture(30);
+    const auto* target_b = first_texture(31);
+    Require(target_a != nullptr && *target_a == wallpaper::GenLinkTex(30),
+            "generic _a composite texture did not retain its published-layer fallback");
+    Require(target_b != nullptr && *target_b == wallpaper::GenLinkTex(31),
+            "generic _b composite texture did not retain its published-layer fallback");
+}
 } // namespace
 
 int main() {
     Verify(true);
     Verify(false);
     Verify(true, true);
+    VerifyLayerLocalCompositeTargetsAreNotDependencies();
     return 0;
 }

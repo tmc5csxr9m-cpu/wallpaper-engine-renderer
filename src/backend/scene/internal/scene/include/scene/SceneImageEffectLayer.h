@@ -22,6 +22,11 @@ struct SceneImageEffectNode {
     std::string                authored_output; // parsed render target template
     std::string                output;          // resolved render target for the current graph
     std::vector<std::string>   authored_textures;
+    // A Wallpaper Engine effect may explicitly sample one side of its owning layer's authored
+    // `_rt_imageLayerComposite_<id>_a/_b` pair. Those slots refer to a fixed physical target, not
+    // the symbolic "current input" alias used by ordinary chained effects. Keep their slot
+    // identity so ResolveEffect() does not swap them a second time.
+    std::vector<bool>          fixed_ping_pong_texture_slots;
     std::shared_ptr<SceneNode> sceneNode;
     // Effect nodes are render-graph internals, not authored scene owners. When an internal pass
     // needs a layer-local camera, store it as a pass override instead of assigning it to
