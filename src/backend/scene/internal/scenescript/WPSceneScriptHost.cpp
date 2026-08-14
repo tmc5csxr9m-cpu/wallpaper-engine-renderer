@@ -5519,16 +5519,25 @@ bool ApplyLayerPropertyValue(WPSceneScriptHost::Opaque* opaque, SceneNode* node,
             }
 
             bool updated_mesh = false;
+            const auto camera_names_it = opaque->scene->objectRuntimeCameraNames.find(layer_id);
+            const bool has_effect_layer =
+                camera_names_it != opaque->scene->objectRuntimeCameraNames.end() &&
+                std::any_of(camera_names_it->second.begin(),
+                            camera_names_it->second.end(),
+                            [&](const std::string& camera_name) {
+                                const auto camera = opaque->scene->cameras.find(camera_name);
+                                return camera != opaque->scene->cameras.end() &&
+                                       camera->second != nullptr && camera->second->HasImgEffect();
+                            });
+            const std::string_view source_alignment =
+                has_effect_layer ? "center" : std::string_view { image_layer->alignment };
             ForEachBaseLayerMaterial(opaque, layer_id, [&](SceneMaterial&, SceneNode* mesh_node) {
                 if (mesh_node == nullptr || mesh_node->Mesh() == nullptr) return;
-                updated_mesh =
-                    UpdateQuadMeshSize(mesh_node->Mesh(), new_size, image_layer->alignment) ||
-                    updated_mesh;
+                updated_mesh = UpdateQuadMeshSize(mesh_node->Mesh(), new_size, source_alignment) ||
+                               updated_mesh;
             });
 
-
-            if (auto camera_names_it = opaque->scene->objectRuntimeCameraNames.find(layer_id);
-                camera_names_it != opaque->scene->objectRuntimeCameraNames.end()) {
+            if (camera_names_it != opaque->scene->objectRuntimeCameraNames.end()) {
                 for (const auto& camera_name : camera_names_it->second) {
                     auto camera_it = opaque->scene->cameras.find(camera_name);
                     if (camera_it == opaque->scene->cameras.end()) continue;

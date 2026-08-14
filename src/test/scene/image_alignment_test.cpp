@@ -1,6 +1,8 @@
 #include "backend/scene/internal/parser/WPSceneParser.hpp"
 #include "backend/scene/internal/scenescript/WPSceneScriptHost.hpp"
 #include "backend/scene/internal/scene/include/scene/Scene.h"
+#include "backend/scene/internal/scene/include/scene/SceneCamera.h"
+#include "backend/scene/internal/scene/include/scene/SceneImageEffectLayer.h"
 #include "backend/scene/internal/scene/include/scene/SceneMesh.h"
 #include "backend/scene/internal/SpecTexs.hpp"
 #include "backend/scene/internal/shader/WPShaderValueUpdater.hpp"
@@ -64,14 +66,13 @@ private:
 };
 
 void MountAssets(wallpaper::fs::VFS& vfs) {
-    Require(vfs.Mount(
-                "/assets",
-                std::make_unique<MemoryFs>(std::unordered_map<std::string, std::string> {
-                    { "/parent.json", R"({ "material": "materials/card.json" })" },
-                    { "/child.json",
-                      R"({ "width": 2, "height": 2, "material": "materials/card.json" })" },
-                    { "/materials/card.json",
-                      R"({
+    Require(vfs.Mount("/assets",
+                      std::make_unique<MemoryFs>(std::unordered_map<std::string, std::string> {
+                          { "/parent.json", R"({ "material": "materials/card.json" })" },
+                          { "/child.json",
+                            R"({ "width": 2, "height": 2, "material": "materials/card.json" })" },
+                          { "/materials/card.json",
+                            R"({
                           "passes": [
                               {
                                   "shader": "alignment_contract",
@@ -79,8 +80,33 @@ void MountAssets(wallpaper::fs::VFS& vfs) {
                               }
                           ]
                       })" },
-                    { "/shaders/alignment_contract.vert",
-                      R"(
+                          { "/effects/alignment_effect.json",
+                            R"({
+                          "name": "Alignment Effect",
+                          "passes": [
+                              { "material": "materials/alignment_effect.json" }
+                          ]
+                      })" },
+                          { "/materials/alignment_effect.json",
+                            R"({
+                          "passes": [
+                              {
+                                  "shader": "alignment_effect",
+                                  "textures": []
+                              }
+                          ]
+                      })" },
+                          { "/materials/util/effectpassthrough.json",
+                            R"({
+                          "passes": [
+                              {
+                                  "shader": "alignment_effect",
+                                  "textures": []
+                              }
+                          ]
+                      })" },
+                          { "/shaders/alignment_contract.vert",
+                            R"(
                           attribute vec3 a_Position;
                           attribute vec2 a_TexCoord;
                           varying vec2 v_TexCoord;
@@ -89,15 +115,34 @@ void MountAssets(wallpaper::fs::VFS& vfs) {
                               v_TexCoord = a_TexCoord;
                           }
                       )" },
-                    { "/shaders/alignment_contract.frag",
-                      R"(
+                          { "/shaders/alignment_contract.frag",
+                            R"(
                           varying vec2 v_TexCoord;
                           void main() {
                               gl_FragColor = vec4(v_TexCoord, 0.0, 1.0);
                           }
                       )" },
-                }),
-                "image-alignment-assets"),
+                          { "/shaders/alignment_effect.vert",
+                            R"(
+                          uniform mat4 g_ModelViewProjectionMatrix;
+                          attribute vec3 a_Position;
+                          attribute vec2 a_TexCoord;
+                          varying vec2 v_TexCoord;
+                          void main() {
+                              gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0);
+                              v_TexCoord = a_TexCoord;
+                          }
+                      )" },
+                          { "/shaders/alignment_effect.frag",
+                            R"(
+                          uniform sampler2D g_Texture0; // {"material":"previous"}
+                          varying vec2 v_TexCoord;
+                          void main() {
+                              gl_FragColor = texture(g_Texture0, v_TexCoord);
+                          }
+                      )" },
+                      }),
+                      "image-alignment-assets"),
             "failed to mount synthetic image assets");
 }
 
@@ -160,6 +205,42 @@ std::shared_ptr<wallpaper::Scene> ParseScene() {
                 "angles": [0, 0, 0],
                 "scale": [1, 1, 1],
                 "visible": true
+            },
+            {
+                "id": 12,
+                "name": "EffectAligned",
+                "image": "parent.json",
+                "origin": [0, 0, 0],
+                "angles": [0, 0, 0],
+                "scale": [1, 1, 1],
+                "alignment": "bottomleft",
+                "size": {
+                    "value": [20, 10],
+                    "animation": {
+                        "options": {
+                            "fps": 10,
+                            "length": 10,
+                            "mode": "single",
+                            "name": "effect-aligned-size"
+                        },
+                        "c0": [
+                            { "frame": 0, "value": 20 },
+                            { "frame": 10, "value": 40 }
+                        ],
+                        "c1": [
+                            { "frame": 0, "value": 10 },
+                            { "frame": 10, "value": 30 }
+                        ]
+                    }
+                },
+                "effects": [
+                    {
+                        "id": 13,
+                        "file": "effects/alignment_effect.json",
+                        "visible": true
+                    }
+                ],
+                "visible": true
             }
         ]
     })";
@@ -186,20 +267,36 @@ std::array<float, 8> ReadQuadXY(const wallpaper::SceneMesh& mesh) {
     return xy;
 }
 
-void RequireTopLeftQuad(const wallpaper::SceneMesh& mesh,
-                        float width,
-                        float height,
-                        std::string_view message) {
+void RequireQuad(const wallpaper::SceneMesh& mesh, const std::array<float, 8>& expected,
+                 std::string_view message) {
     const auto xy = ReadQuadXY(mesh);
+    for (std::size_t index = 0; index < xy.size(); ++index) {
+        if (! Near(xy[index], expected[index])) Fail(message);
+    }
+}
+
+void RequireTopLeftQuad(const wallpaper::SceneMesh& mesh, float width, float height,
+                        std::string_view message) {
     const std::array<float, 8> expected {
         0.0f, -height,
         0.0f, 0.0f,
         width, -height,
         width, 0.0f,
     };
-    for (std::size_t index = 0; index < xy.size(); ++index) {
-        if (! Near(xy[index], expected[index])) Fail(message);
+    RequireQuad(mesh, expected, message);
+}
+
+wallpaper::SceneImageEffectLayer* FindEffectLayer(wallpaper::Scene& scene, int32_t layer_id) {
+    const auto names = scene.objectRuntimeCameraNames.find(layer_id);
+    if (names == scene.objectRuntimeCameraNames.end()) return nullptr;
+    for (const auto& name : names->second) {
+        const auto camera = scene.cameras.find(name);
+        if (camera != scene.cameras.end() && camera->second != nullptr &&
+            camera->second->HasImgEffect()) {
+            return camera->second->GetImgEffect().get();
+        }
     }
+    return nullptr;
 }
 
 Eigen::Matrix4d ResolveRawModelTransform(wallpaper::Scene& scene,
@@ -237,8 +334,9 @@ Eigen::Matrix4d ResolveRawModelTransform(wallpaper::Scene& scene,
 int main() {
     auto scene = ParseScene();
     Require(scene != nullptr, "synthetic aligned image scene failed to parse");
-    Require(scene->layerNodes.contains(10) && scene->layerNodes.contains(11),
-            "aligned parent/child layers were not materialized");
+    Require(scene->layerNodes.contains(10) && scene->layerNodes.contains(11) &&
+                scene->layerNodes.contains(12),
+            "aligned image layers were not materialized");
 
     auto* parent = scene->layerNodes.at(10);
     auto* child = scene->layerNodes.at(11);
@@ -248,6 +346,15 @@ int main() {
             "image alignment must not be stored in the SceneNode transform");
     RequireTopLeftQuad(*parent->Mesh(), 20.0f, 10.0f,
                        "cold-parsed top-left quad geometry mismatch");
+
+    auto* effect_layer = FindEffectLayer(*scene, 12);
+    Require(effect_layer != nullptr, "bottom-left aligned image effect layer was not materialized");
+    RequireQuad(effect_layer->SourceMesh(),
+                { -10.0f, -5.0f, -10.0f, 5.0f, 10.0f, -5.0f, 10.0f, 5.0f },
+                "effect source quad must stay centered in its private camera");
+    RequireQuad(effect_layer->FinalMesh(),
+                { 0.0f, 0.0f, 0.0f, 10.0f, 20.0f, 0.0f, 20.0f, 10.0f },
+                "effect final quad must preserve authored bottom-left alignment");
 
     parent->UpdateTrans();
     Require(Near(parent->ModelTrans()(0, 3), 100.0)
@@ -267,6 +374,12 @@ int main() {
 
     RequireTopLeftQuad(*parent->Mesh(), 30.0f, 20.0f,
                        "runtime-resized top-left quad geometry mismatch");
+    RequireQuad(effect_layer->SourceMesh(),
+                { -15.0f, -10.0f, -15.0f, 10.0f, 15.0f, -10.0f, 15.0f, 10.0f },
+                "runtime-resized effect source must stay centered in its private camera");
+    RequireQuad(effect_layer->FinalMesh(),
+                { 0.0f, 0.0f, 0.0f, 20.0f, 30.0f, 0.0f, 30.0f, 20.0f },
+                "runtime-resized effect final must preserve bottom-left alignment");
     parent->UpdateTrans();
     Require(Near(parent->ModelTrans()(0, 3), 100.0)
                 && Near(parent->ModelTrans()(1, 3), 50.0),

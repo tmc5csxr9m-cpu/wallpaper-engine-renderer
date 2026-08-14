@@ -4710,6 +4710,12 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj,
                                                    wpimgobj.name);
     const Vector3f alignment_offset = ResolveImageAlignmentOffset(
         wpimgobj.alignment, Vector2f { wpimgobj.size[0], wpimgobj.size[1] });
+    // Alignment places the finished layer around its authored origin. An effect source, however,
+    // is rendered through a layer-local camera centered on the source texture. Applying the final
+    // bottom/left offset to that private source card clips half of the card before the effect chain
+    // starts; the final aligned writer then magnifies the already-clipped texture. Keep private
+    // effect inputs centered and apply alignment only to the final visible mesh.
+    const Vector3f source_alignment_offset = hasEffect ? Vector3f::Zero() : alignment_offset;
     spWorldNode->ID() = wpimgobj.id;
     auto spImgNode = use_detached_effect_world_node ? std::make_shared<SceneNode>() : spWorldNode;
     spImgNode->SetName(wpimgobj.name);
@@ -4831,7 +4837,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj,
                 GenCardMesh(mesh,
                             { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] },
                             mapRate,
-                            alignment_offset);
+                            source_alignment_offset);
                 WPMdlParser::GenPuppetMesh(effct_final_mesh, *puppet, alignment_offset);
 
                 wpscene::WPImageEffect puppet_effect;
@@ -4860,7 +4866,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj,
                 GenCardMesh(mesh,
                             { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] },
                             mapRate,
-                            alignment_offset);
+                            source_alignment_offset);
                 WPMdlParser::GenPuppetMesh(effct_final_mesh, *puppet, alignment_offset);
             } else {
                 // No-effect static image puppets can draw the authored mesh directly. This keeps
@@ -4883,7 +4889,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj,
             GenCardMesh(mesh,
                         { (uint16_t)source_mesh_size[0], (uint16_t)source_mesh_size[1] },
                         mapRate,
-                        alignment_offset);
+                        source_alignment_offset);
             if (wpimgobj.effectFinalTexCoordBoundsEnabled) {
                 GenCardMeshWithTexCoordBounds(effct_final_mesh,
                                                wpimgobj.size,
