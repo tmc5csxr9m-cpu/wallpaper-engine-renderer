@@ -61,7 +61,7 @@ void MountFixtures(wallpaper::fs::VFS& vfs) {
     vfs.Mount(
         "/assets",
         std::make_unique<MemoryFs>(std::unordered_map<std::string, std::string> {
-            { "/models/test.json", R"({"material":"materials/test.json","width":64,"height":32})" },
+            { "/models/test.json", R"({"material":"materials/test.json","width":64,"height":32,"passthrough":true})" },
             { "/materials/test.json",
               R"({"passes":[{"shader":"genericimage2","textures":["materials/base.tex"],"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled"}]})" },
             { "/particles/test.json",
@@ -115,6 +115,8 @@ void TestImageSchema() {
     };
 
     Require(image.FromJson(source, vfs), "image schema fixture should parse");
+    Require(image.config.passthrough,
+            "top-level model passthrough metadata was not preserved");
     Require(image.locktransforms && image.muteineditor && image.nointerpolation,
             "image common flags were not preserved");
     Require(image.dependencies == std::vector<std::int32_t> { 2, 3 },

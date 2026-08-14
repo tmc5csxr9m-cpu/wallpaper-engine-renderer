@@ -258,10 +258,12 @@ void SceneImageEffectLayer::SyncResolvedNodeToWorld() {
     // authored scene node. Copying only the local TRS loses virtual parent transforms used by
     // render-order proxy groups such as Wallpaper Engine compose layers. Resolve the full world
     // matrix here so the final screen writer lands in the same place as the authored layer.
-    Eigen::Affine3f world_affine;
-    world_affine.matrix() = m_worldNode->ModelTrans().cast<float>();
-    m_final_node->SetLocalAffine(world_affine);
-    m_final_node->UpdateTrans();
+    if (! m_fullscreen) {
+        Eigen::Affine3f world_affine;
+        world_affine.matrix() = m_worldNode->ModelTrans().cast<float>();
+        m_final_node->SetLocalAffine(world_affine);
+        m_final_node->UpdateTrans();
+    }
 
     if (m_resolved_output_node != nullptr && m_resolved_output_follows_world) {
         m_resolved_output_node->CopyTrans(*m_final_node);
@@ -270,8 +272,10 @@ void SceneImageEffectLayer::SyncResolvedNodeToWorld() {
 }
 
 void SceneImageEffectLayer::SyncResolvedNodeToMatrix(const Eigen::Affine3f& world_affine) {
-    m_final_node->SetLocalAffine(world_affine);
-    m_final_node->UpdateTrans();
+    if (! m_fullscreen) {
+        m_final_node->SetLocalAffine(world_affine);
+        m_final_node->UpdateTrans();
+    }
 
     if (m_resolved_output_node != nullptr && m_resolved_output_follows_world) {
         m_resolved_output_node->CopyTrans(*m_final_node);

@@ -99,6 +99,14 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE_NOWARN(jImage, "fullscreen", fullscreen);
     GET_JSON_NAME_VALUE_NOWARN(jImage, "autosize", autosize);
     GET_JSON_NAME_VALUE_NOWARN(jImage, "solidlayer", solidlayer);
+    // Stock utility models such as `models/util/composelayer.json` serialize `passthrough`
+    // directly on the model object. Older fixtures and a few third-party models put the same
+    // flag under `config`, so accept both spellings and let the nested form override the legacy
+    // top-level value below. Missing this stock form turns a source-less compose helper into an
+    // ordinary image effect: its children render into a transparent private target, but the final
+    // effect is blended as a normal authored image and faint additive content (rain/audio bars)
+    // disappears on publication.
+    GET_JSON_NAME_VALUE_NOWARN(jImage, "passthrough", config.passthrough);
     // Project-layer is authored in the utility model JSON. Reading it here keeps the later parser
     // decision tied to the resolved asset metadata instead of relying only on a hard-coded path.
     GET_JSON_NAME_VALUE_NOWARN(jImage, "projectlayer", projectlayer);
@@ -232,6 +240,10 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
              GET_JSON_NAME_VALUE_NOWARN(jLayer, "blendtime", layer.blendtime);
              puppet_layers.push_back(layer);
         }
+    }
+    if (jImage.contains("config") && jImage.at("config").is_object()) {
+        const auto& jConf = jImage.at("config");
+        GET_JSON_NAME_VALUE_NOWARN(jConf, "passthrough", config.passthrough);
     }
     if(json.contains("config")) {
         const auto& jConf = json.at("config");

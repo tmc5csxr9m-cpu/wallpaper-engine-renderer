@@ -114,6 +114,20 @@ void MountAssets(wallpaper::fs::VFS& vfs) {
                           "height": 64,
                           "material": "materials/image.json"
                       })" },
+                    { "/models/util/composelayer.json",
+                      R"({
+                          "width": 128,
+                          "height": 64,
+                          "material": "materials/image.json",
+                          "passthrough": true
+                      })" },
+                    { "/models/util/projectlayer.json",
+                      R"({
+                          "material": "materials/image.json",
+                          "passthrough": true,
+                          "autosize": true,
+                          "projectlayer": true
+                      })" },
                     { "/materials/image.json",
                       R"({
                           "passes": [
@@ -263,6 +277,39 @@ Fixture ParseScene(const wallpaper::UserPropertyMap& properties) {
                                                   "visible": true
                                               }
                                           ]
+                                      },
+                                      {
+                                          "id": 30,
+                                          "name": "DepthPreservingCompose",
+                                          "image": "models/util/composelayer.json",
+                                          "origin": [64, 32, 0],
+                                          "angles": [0, 0, 0],
+                                          "scale": [1, 1, 1],
+                                          "visible": true,
+                                          "effects": [
+                                              {
+                                                  "id": 31,
+                                                  "file": "effects/transform.json",
+                                                  "visible": true
+                                              }
+                                          ]
+                                      },
+                                      {
+                                          "id": 40,
+                                          "name": "CameraNeutralProjectLayer",
+                                          "image": "models/util/projectlayer.json",
+                                          "origin": [64, 32, 0],
+                                          "angles": [0, 0, 0],
+                                          "scale": [1, 1, 1],
+                                          "size": [128, 64],
+                                          "visible": true,
+                                          "effects": [
+                                              {
+                                                  "id": 41,
+                                                  "file": "effects/transform.json",
+                                                  "visible": true
+                                              }
+                                          ]
                                       }
                                   ]
                               })",
@@ -343,6 +390,16 @@ int main() {
     auto fixture = ParseScene(initial);
     auto scene = fixture.scene;
     Require(scene != nullptr, "scene failed to parse");
+    const auto compose_cameras = scene->objectRuntimeCameraNames.find(30);
+    Require(compose_cameras != scene->objectRuntimeCameraNames.end() &&
+                !compose_cameras->second.empty(),
+            "compose layer has no runtime source camera");
+    const auto compose_camera = scene->cameras.find(compose_cameras->second.front());
+    Require(compose_camera != scene->cameras.end() && compose_camera->second != nullptr,
+            "compose layer source camera was not registered");
+    Require(NearlyEqual(static_cast<float>(compose_camera->second->NearClip()), -5000.0f) &&
+                NearlyEqual(static_cast<float>(compose_camera->second->FarClip()), 5000.0f),
+            "compose layer source camera did not preserve the global scene depth range");
     Require(scene->deferredRuntimeImageLayerIds.contains(10),
             "hidden user-visible image was not deferred");
     Require(!scene->GetLayerLocalVisibility(10),
@@ -359,6 +416,24 @@ int main() {
 
     auto graph = wallpaper::BuildWESceneRenderPlan(*scene);
     Require(graph != nullptr, "initial render graph failed to build");
+    const auto project_layer = FindAuthoredFinalEffectMaterial(*scene, 40);
+    Require(project_layer != nullptr, "project layer effect material was not created");
+    const auto project_cameras = scene->objectRuntimeCameraNames.find(40);
+    Require(project_cameras != scene->objectRuntimeCameraNames.end() &&
+                !project_cameras->second.empty(),
+            "project layer has no runtime effect camera");
+    const auto project_camera = scene->cameras.find(project_cameras->second.front());
+    Require(project_camera != scene->cameras.end() && project_camera->second != nullptr &&
+                project_camera->second->HasImgEffect(),
+            "project layer effect bridge was not registered");
+    Require(project_camera->second->GetImgEffect()->FinalNode().Camera() == "effect",
+            "project layer final writer would reapply the active camera projection");
+    auto project_effect = project_camera->second->GetImgEffect();
+    project_effect->SyncResolvedNodeToWorld();
+    const auto project_final_transform = project_effect->FinalNode().GetLocalTrans();
+    Require(NearlyEqual(project_final_transform(0, 3), 0.0f) &&
+                NearlyEqual(project_final_transform(1, 3), 0.0f),
+            "project layer screen-space publisher inherited the world-layer translation");
     RegisterRuntime(*scene);
     scene->scriptHost->FrameBegin(0.1);
     Require(NearlyEqual(scene->layerNodes.at(10)->Scale().x(), 1.0f),

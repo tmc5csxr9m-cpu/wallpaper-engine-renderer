@@ -1966,7 +1966,18 @@ struct ImageEffectCameraClipRange {
     float far_clip { 1.0f };
 };
 
-ImageEffectCameraClipRange ResolveImageEffectCameraClipRange(bool has_animated_puppet_mesh) {
+ImageEffectCameraClipRange ResolveImageEffectCameraClipRange(bool               has_animated_puppet_mesh,
+                                                             bool               is_compose_layer,
+                                                             const SceneCamera* global_camera) {
+    if (is_compose_layer && global_camera != nullptr) {
+        // A compose layer is a local publication of scene content, not a flat source card. Its
+        // children can therefore occupy the same authored depth range as ordinary scene nodes
+        // (perspective rain particles commonly span roughly +/-1000 on Z). Reusing the global
+        // orthographic clip planes preserves that content in the private target instead of
+        // silently clipping everything outside the image-effect default of +/-1.
+        return { static_cast<float>(global_camera->NearClip()),
+                 static_cast<float>(global_camera->FarClip()) };
+    }
     if (! has_animated_puppet_mesh) return {};
 
     // Animated puppet meshes are still rendered by 2D image-effect cameras, but their bone
@@ -4934,7 +4945,11 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj,
         auto& scene = *context.scene;
         // currently use addr for unique
         std::string nodeAddr = getAddr(spImgNode.get());
-        const auto  effect_camera_clip = ResolveImageEffectCameraClipRange(hasAnimatedPuppetMesh);
+        const auto global_camera_it = scene.cameras.find("global");
+        const auto effect_camera_clip = ResolveImageEffectCameraClipRange(
+            hasAnimatedPuppetMesh,
+            isCompose,
+            global_camera_it != scene.cameras.end() ? global_camera_it->second.get() : nullptr);
         // set camera to attatch effect
         const int32_t source_camera_width  = effect_extent[0];
         const int32_t source_camera_height = effect_extent[1];
@@ -4999,7 +5014,12 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj,
             // that authored shape here so ResolveEffect() can keep their final shader on the
             // effect-camera fullscreen quad instead of projecting the 2x2 utility mesh through the
             // active scene camera.
-            imgEffectLayer->SetFullscreen(wpimgobj.fullscreen);
+            // A project layer samples the already camera-projected project framebuffer. Publishing
+            // that texture through the active world camera again squares animated 2D camera zoom
+            // (an authored 3x intro becomes 9x) and applies the camera translation twice. Resolve
+            // its final writer in screen space, like a fullscreen post-process, while retaining the
+            // authored project-sized source target for its effect chain.
+            imgEffectLayer->SetFullscreen(wpimgobj.fullscreen || isProjectLayer);
             imgEffectLayer->SetFinalBlend(imgBlendMode);
             imgEffectLayer->SetClearSourceBeforeOwnerDraw(use_copybackground_source_helper);
             const auto source_policy = ResolveImageEffectSourcePolicy(isCompose, wpimgobj);
@@ -5898,7 +5918,6 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                                                      Vector3f(wppartobj.angles.data()),
                                                      wppartobj.name);
     }
-
     wpscene::ParticleInstanceoverride override =
         ResolveParticleSubsystemOverride(wppartobj.instanceoverride, is_child);
 
