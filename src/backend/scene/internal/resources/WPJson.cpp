@@ -550,7 +550,16 @@ inline bool _GetJsonValue(const nlohmann::json&                  json,
 
     using Tv = typename T::value_type;
     if (njson.is_number()) {
-        value = { njson.get<Tv>() };
+        const auto scalar = njson.get<Tv>();
+        if constexpr (IsStdVector<T>::value) {
+            value.assign(1, scalar);
+        } else {
+            // Wallpaper Engine serializes scalar fields such as particle emitter Distance Min/Max
+            // into fixed-size vector destinations. A scalar represents the same radius on every
+            // axis; aggregate-initializing std::array only populated X and silently zeroed Y/Z,
+            // collapsing sphere emitters into a line.
+            value.fill(scalar);
+        }
         return true;
     }
 

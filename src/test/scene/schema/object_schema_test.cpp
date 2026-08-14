@@ -61,12 +61,11 @@ void MountFixtures(wallpaper::fs::VFS& vfs) {
     vfs.Mount(
         "/assets",
         std::make_unique<MemoryFs>(std::unordered_map<std::string, std::string> {
-            { "/models/test.json",
-              R"({"material":"materials/test.json","width":64,"height":32})" },
+            { "/models/test.json", R"({"material":"materials/test.json","width":64,"height":32})" },
             { "/materials/test.json",
               R"({"passes":[{"shader":"genericimage2","textures":["materials/base.tex"],"blending":"translucent","cullmode":"nocull","depthtest":"disabled","depthwrite":"disabled"}]})" },
             { "/particles/test.json",
-              R"({"emitter":[{"name":"box","id":1}],"material":"materials/test.json","maxcount":8,"starttime":0})" },
+              R"({"emitter":[{"name":"boxrandom","id":1,"distancemin":4,"distancemax":1024}],"material":"materials/test.json","maxcount":8,"starttime":0})" },
         }),
         "schema-test");
 }
@@ -174,6 +173,12 @@ void TestParticleSchema() {
             "particle common metadata mismatch");
     Require(particle.parent == 9 && particle.attachment == "particle-socket",
             "particle hierarchy metadata mismatch");
+    Require(! particle.particleObj.emitters.empty() &&
+                particle.particleObj.emitters.front().distancemin ==
+                    std::array<float, 3> { 4.0f, 4.0f, 4.0f } &&
+                particle.particleObj.emitters.front().distancemax ==
+                    std::array<float, 3> { 1024.0f, 1024.0f, 1024.0f },
+            "scalar particle emitter distance must broadcast to every axis");
 }
 
 void TestTextSchema() {
